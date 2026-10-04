@@ -6,186 +6,160 @@
 # You will be building the image processing pipeline for the drone. The pipeline will take in an image and output a txt file. 
 import cv2
 import numpy as np
-import string
-import sys
 import os
+import sys
 
-# ============ Settings (change these if needed) ============
-IMAGE_NAME = "image_1.jpg"          # the arena photo (keep the quotes)
-REQUIRED_IDS = [80, 85, 90, 95]     # the four corner markers
-OUT_SIZE = 900                      # final arena size: 900 x 900
-GRID_CELLS = 12                     # arena is 12 x 12 cells
-EDGE_MARGIN = 0                     # set to 1-3 if a thin marker/white strip shows on the edges
-MIN_AREA = 100                      # ignore coloured blobs smaller than this (noise)
-SHOW_WINDOWS = True                 # set False if you have no display; PNGs are still saved
+img_name = "image_1.jpg"
+needed_ids = [80, 85, 90, 95]
+size = 900
+cells = 12
+min_area = 100
 
-# Colour ranges in HSV (OpenCV hue goes 0-179). Tune these if a survivor is missed.
-RED_RANGES = [((0, 120, 100), (10, 255, 255)),      # red sits at both ends of the hue scale
-              ((170, 120, 100), (179, 255, 255))]
-YELLOW_RANGES = [((20, 100, 100), (35, 255, 255))]
+folder = os.path.dirname(os.path.abspath(__file__))
 
 
-# ============ Find the image ============
-# Look in the folder you run from first, then in the folder this script lives in.
-script_dir = os.path.dirname(os.path.abspath(__file__))
-candidates = [IMAGE_NAME, os.path.join(script_dir, IMAGE_NAME)]
-IMAGE_PATH = next((p for p in candidates if os.path.exists(p)), None)
-
-if IMAGE_PATH is None:
-    print("Could not find", IMAGE_NAME)
-    print("Looked in:", os.getcwd(), "and", script_dir)
-    print("Put the image in one of those folders, or set IMAGE_NAME to its full path.")
-    sys.exit(1)
-
-# Output files go next to the script so they are easy to find
-out_dir = script_dir
-
-
-# ============ Part 1: find the corner markers ============
-img = cv2.imread(IMAGE_PATH)
+# Part 1
+img = cv2.imread(os.path.join(folder, img_name))
 if img is None:
-    print("Found the file but could not read it as an image:", IMAGE_PATH)
-    sys.exit(1)
+    print("cant read", img_name)
+    sys.exit()
 
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
 detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
 corners, ids, rejected = detector.detectMarkers(gray)
 
 if ids is None:
-    print("No markers detected at all.")
-    sys.exit(1)
+    print("no markers found")
+    sys.exit()
 
 ids = ids.flatten()
-print("Detected IDs:", ids.tolist())
+print("ids:", ids.tolist())
 
 markers = {}
-for marker_id, c in zip(ids, corners):
-    if int(marker_id) in REQUIRED_IDS:
-        markers[int(marker_id)] = c.reshape(4, 2)
+for i, c in zip(ids, corners):
+    if int(i) in needed_ids:
+        markers[int(i)] = c.reshape(4, 2)
 
-missing = [i for i in REQUIRED_IDS if i not in markers]
-if missing:
-    print("Missing marker(s):", missing)
-    sys.exit(1)
-print("All four markers found.")
+for i in needed_ids:
+    if i not in markers:
+        print("marker", i, "is missing")
+        sys.exit()
 
-detections_img = img.copy()
-cv2.aruco.drawDetectedMarkers(detections_img, corners, ids.reshape(-1, 1))
+det_img = img.copy()
+cv2.aruco.drawDetectedMarkers(det_img, corners, ids.reshape(-1, 1))
 
 
-# ============ Part 2: straighten the arena (perspective transform) ============
-centres = {mid: markers[mid].mean(axis=0) for mid in REQUIRED_IDS}
-arena_centre = np.mean(list(centres.values()), axis=0)
+# Part 2
+centers = {}
+for i in needed_ids:
+    centers[i] = markers[i].mean(axis=0)
+mid = np.mean(list(centers.values()), axis=0)
 
-# Inner corner of each marker = the corner closest to the arena centre
+# corner of each marker that is closest to the middle
 inner = {}
-for mid in REQUIRED_IDS:
-    dists = np.linalg.norm(markers[mid] - arena_centre, axis=1)
-    inner[mid] = markers[mid][np.argmin(dists)]
+for i in needed_ids:
+    d = np.linalg.norm(markers[i] - mid, axis=1)
+    inner[i] = markers[i][np.argmin(d)]
 
-# Which marker is top-left, top-right, bottom-right, bottom-left
-by_y = sorted(REQUIRED_IDS, key=lambda m: centres[m][1])
-tl_id, tr_id = sorted(by_y[:2], key=lambda m: centres[m][0])
-bl_id, br_id = sorted(by_y[2:], key=lambda m: centres[m][0])
-print("TL, TR, BR, BL IDs:", tl_id, tr_id, br_id, bl_id)
+order = sorted(needed_ids, key=lambda i: centers[i][1])
+top = sorted(order[:2], key=lambda i: centers[i][0])
+bottom = sorted(order[2:], key=lambda i: centers[i][0])
 
-src = np.array([inner[tl_id], inner[tr_id], inner[br_id], inner[bl_id]],
-               dtype=np.float32)
-m = EDGE_MARGIN
-src += np.array([[m, m], [-m, m], [-m, -m], [m, -m]], dtype=np.float32)
-
-dst = np.array([[0, 0],
-                [OUT_SIZE - 1, 0],
-                [OUT_SIZE - 1, OUT_SIZE - 1],
-                [0, OUT_SIZE - 1]], dtype=np.float32)
+src = np.float32([inner[top[0]], inner[top[1]], inner[bottom[1]], inner[bottom[0]]])
+dst = np.float32([[0, 0], [size - 1, 0], [size - 1, size - 1], [0, size - 1]])
 
 M = cv2.getPerspectiveTransform(src, dst)
-warped = cv2.warpPerspective(img, M, (OUT_SIZE, OUT_SIZE))
-print("Warped shape:", warped.shape)          # must be (900, 900, 3)
-
-for p in src:
-    cv2.circle(detections_img, tuple(int(v) for v in p), 6, (0, 0, 255), -1)
+warped = cv2.warpPerspective(img, M, (size, size))
+print("warped:", warped.shape)
 
 
-# ============ Part 3: grid lines and the 121 intersections ============
-cell = OUT_SIZE / GRID_CELLS                  # 75 px per cell
-line_positions = [int(round(cell * k)) for k in range(1, GRID_CELLS)]   # 75 ... 825
+# Part 3
+cell = size / cells
+lines = [int(round(cell * k)) for k in range(1, cells)]
 
 
-# ============ Part 4: name every intersection ============
-# Columns A-K (left to right), rows 1-11 (top to bottom), e.g. "A1", "C2", "K11"
-column_letters = string.ascii_uppercase[:GRID_CELLS - 1]    # "ABCDEFGHIJK"
+# Part 4
+letters = "ABCDEFGHIJK"
+points = {}
+for r in range(11):
+    for c in range(11):
+        points[letters[c] + str(r + 1)] = (lines[c], lines[r])
+print("intersections:", len(points))
 
-intersections = {}      # name -> (x, y) in the 900 x 900 image
-for row_index, y in enumerate(line_positions):
-    for col_index, x in enumerate(line_positions):
-        name = column_letters[col_index] + str(row_index + 1)
-        intersections[name] = (x, y)
-        # ============ Part 5: find the survivors (red and yellow regions) ============
-import os
 
-MIN_AREA = 100                      # ignore coloured blobs smaller than this (noise)
-SHOW_WINDOWS = True                 # set False if you have no display; PNGs are still saved
-
-# Colour ranges in HSV (OpenCV hue goes 0-179). Tune these if a survivor is missed.
-RED_RANGES = [((0, 120, 100), (10, 255, 255)),      # red sits at both ends of the hue scale
-              ((170, 120, 100), (179, 255, 255))]
-YELLOW_RANGES = [((20, 100, 100), (35, 255, 255))]
-
-out_dir = os.path.dirname(os.path.abspath(__file__))    # save images next to the script
-
-hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)     # use the clean warped image
+# Part 5
+hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
 kernel = np.ones((5, 5), np.uint8)
 
+red1 = cv2.inRange(hsv, (0, 120, 100), (10, 255, 255))
+red2 = cv2.inRange(hsv, (170, 120, 100), (179, 255, 255))
+red_mask = cv2.bitwise_or(red1, red2)
+yellow_mask = cv2.inRange(hsv, (20, 100, 100), (35, 255, 255))
 
-def colour_mask(ranges):
-    """Black/white mask for one colour (white = that colour)."""
-    mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-    for lo, hi in ranges:
-        mask = cv2.bitwise_or(mask, cv2.inRange(hsv, lo, hi))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)    # remove tiny specks
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)   # fill small holes
-    return mask
+red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, kernel)
+yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_CLOSE, kernel)
 
+red_cnts, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+yellow_cnts, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-def find_regions(mask):
-    """Outline of every region big enough to be a survivor."""
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return [c for c in contours if cv2.contourArea(c) >= MIN_AREA]
-
-
-red_mask = colour_mask(RED_RANGES)
-yellow_mask = colour_mask(YELLOW_RANGES)
-
-red_regions = find_regions(red_mask)
-yellow_regions = find_regions(yellow_mask)
-
-print("Red survivors found   :", len(red_regions))
-print("Yellow survivors found:", len(yellow_regions))
-print("Total                 :", len(red_regions) + len(yellow_regions))
+red_cnts = [c for c in red_cnts if cv2.contourArea(c) > min_area]
+yellow_cnts = [c for c in yellow_cnts if cv2.contourArea(c) > min_area]
+print("red:", len(red_cnts), "yellow:", len(yellow_cnts))
 
 
-# ============ Part 6: reduce each survivor to one point (its centre) ============
-def region_centre(contour):
-    """Centre of mass of the filled region (works for circles and triangles).
-    Falls back to the bounding-box centre if the region has zero area."""
-    mo = cv2.moments(contour)
-    if mo["m00"] > 0:
-        return mo["m10"] / mo["m00"], mo["m01"] / mo["m00"]
-    x, y, w, h = cv2.boundingRect(contour)
-    return x + w / 2, y + h / 2
+# Part 6
+def get_center(cnt):
+    m = cv2.moments(cnt)
+    if m["m00"] == 0:
+        x, y, w, h = cv2.boundingRect(cnt)
+        return x + w / 2, y + h / 2
+    return m["m10"] / m["m00"], m["m01"] / m["m00"]
 
 
-# ============ Part 7: match each centre to the nearest intersection ============
-def nearest_intersection(cx, cy):
-    """Nearest grid crossing. Crossings sit at multiples of `cell`, from 1 to 11."""
-    col = int(cx / cell + 0.5)
-    row = int(cy / cell + 0.5)
-    col = min(max(col, 1), GRID_CELLS - 1)
-    row = min(max(row, 1), GRID_CELLS - 1)
-    return column_letters[col - 1] + str(row)
+# Part 7
+def get_name(x, y):
+    col = int(x / cell + 0.5)
+    row = int(y / cell + 0.5)
+    col = max(1, min(col, 11))
+    row = max(1, min(row, 11))
+    return letters[col - 1] + str(row)
 
 
-survivors = []      # (colour, centre_x,
+found = []
+for cnt in red_cnts:
+    x, y = get_center(cnt)
+    found.append(("red", x, y, get_name(x, y)))
+for cnt in yellow_cnts:
+    x, y = get_center(cnt)
+    found.append(("yellow", x, y, get_name(x, y)))
+
+for colour, x, y, name in found:
+    print(colour, round(x, 1), round(y, 1), name)
+
+
+# draw results
+out = warped.copy()
+cv2.drawContours(out, red_cnts + yellow_cnts, -1, (0, 255, 0), 2)
+
+for p in lines:
+    cv2.line(out, (p, 0), (p, size - 1), (255, 0, 255), 1)
+    cv2.line(out, (0, p), (size - 1, p), (255, 0, 255), 1)
+
+for colour, x, y, name in found:
+    pt = (int(x), int(y))
+    cv2.circle(out, pt, 5, (0, 0, 0), -1)
+    cv2.putText(out, name, (pt[0] + 8, pt[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+    cv2.putText(out, name, (pt[0] + 8, pt[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+cv2.imwrite(os.path.join(folder, "detections.png"), det_img)
+cv2.imwrite(os.path.join(folder, "warped.png"), warped)
+cv2.imwrite(os.path.join(folder, "red_mask.png"), red_mask)
+cv2.imwrite(os.path.join(folder, "yellow_mask.png"), yellow_mask)
+cv2.imwrite(os.path.join(folder, "survivors.png"), out)
+
+cv2.imshow("survivors", out)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
