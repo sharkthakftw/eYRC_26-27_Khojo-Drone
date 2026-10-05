@@ -3,7 +3,7 @@
 
 # This script is used to run the first task 1A of Khojo Drone.
 
-# You will be building the image processing pipeline for the drone. The pipeline will take in an image and output a txt file. 
+# You will be building the image processing pipeline for the drone. The pipeline will take in an image and output a txt file.
 import argparse
 import os
 import sys
@@ -25,6 +25,26 @@ parser.add_argument("--image", required=True)
 args = parser.parse_args()
 
 
+def detect_markers(gray):
+    """Detect ArUco markers; works on both old (<4.7) and new (>=4.7) OpenCV."""
+    # new API (OpenCV >= 4.7)
+    if hasattr(cv2.aruco, "ArucoDetector"):
+        d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+        p = cv2.aruco.DetectorParameters()
+        return cv2.aruco.ArucoDetector(d, p).detectMarkers(gray)
+
+    # old API (OpenCV < 4.7)
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+    else:
+        d = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_250)
+    if hasattr(cv2.aruco, "DetectorParameters_create"):
+        p = cv2.aruco.DetectorParameters_create()
+    else:
+        p = cv2.aruco.DetectorParameters()
+    return cv2.aruco.detectMarkers(gray, d, parameters=p)
+
+
 # Part 1
 img = cv2.imread(args.image)
 if img is None:
@@ -32,9 +52,7 @@ if img is None:
     sys.exit(1)
 
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
-detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
-corners, ids, rejected = detector.detectMarkers(gray)
+corners, ids, rejected = detect_markers(gray)
 
 if ids is None:
     print("no markers found")
@@ -95,7 +113,8 @@ contours = {}
 for colour, mask in masks.items():
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # [-2] works for both OpenCV 3 (3 return values) and 4 (2 return values)
+    cnts = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
     contours[colour] = [c for c in cnts if cv2.contourArea(c) > min_area]
 
 
