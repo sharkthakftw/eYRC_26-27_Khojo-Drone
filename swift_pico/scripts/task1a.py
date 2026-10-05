@@ -4,25 +4,32 @@
 # This script is used to run the first task 1A of Khojo Drone.
 
 # You will be building the image processing pipeline for the drone. The pipeline will take in an image and output a txt file. 
-import cv2
-import numpy as np
+import argparse
 import os
 import sys
 
-img_name = "image_1.jpg"
+import cv2
+import numpy as np
+
+# colour that counts as critical (swap these if the task page says the opposite)
+CRITICAL_COLOUR = "red"
+STABLE_COLOUR = "yellow"
+
 needed_ids = [80, 85, 90, 95]
 size = 900
 cells = 12
 min_area = 100
 
-folder = os.path.dirname(os.path.abspath(__file__))
+parser = argparse.ArgumentParser()
+parser.add_argument("--image", required=True)
+args = parser.parse_args()
 
 
 # Part 1
-img = cv2.imread(os.path.join(folder, img_name))
+img = cv2.imread(args.image)
 if img is None:
-    print("cant read", img_name)
-    sys.exit()
+    print("cant read", args.image)
+    sys.exit(1)
 
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
@@ -31,10 +38,11 @@ corners, ids, rejected = detector.detectMarkers(gray)
 
 if ids is None:
     print("no markers found")
-    sys.exit()
+    sys.exit(1)
 
 ids = ids.flatten()
-print("ids:", ids.tolist())
+detected_ids = sorted(int(i) for i in ids)
+print("ids:", detected_ids)
 
 markers = {}
 for i, c in zip(ids, corners):
@@ -44,19 +52,13 @@ for i, c in zip(ids, corners):
 for i in needed_ids:
     if i not in markers:
         print("marker", i, "is missing")
-        sys.exit()
-
-det_img = img.copy()
-cv2.aruco.drawDetectedMarkers(det_img, corners, ids.reshape(-1, 1))
+        sys.exit(1)
 
 
 # Part 2
-centers = {}
-for i in needed_ids:
-    centers[i] = markers[i].mean(axis=0)
+centers = {i: markers[i].mean(axis=0) for i in needed_ids}
 mid = np.mean(list(centers.values()), axis=0)
 
-# corner of each marker that is closest to the middle
 inner = {}
 for i in needed_ids:
     d = np.linalg.norm(markers[i] - mid, axis=1)
@@ -71,21 +73,11 @@ dst = np.float32([[0, 0], [size - 1, 0], [size - 1, size - 1], [0, size - 1]])
 
 M = cv2.getPerspectiveTransform(src, dst)
 warped = cv2.warpPerspective(img, M, (size, size))
-print("warped:", warped.shape)
 
 
-# Part 3
+# Part 3 and 4
 cell = size / cells
-lines = [int(round(cell * k)) for k in range(1, cells)]
-
-
-# Part 4
 letters = "ABCDEFGHIJK"
-points = {}
-for r in range(11):
-    for c in range(11):
-        points[letters[c] + str(r + 1)] = (lines[c], lines[r])
-print("intersections:", len(points))
 
 
 # Part 5
@@ -94,20 +86,17 @@ kernel = np.ones((5, 5), np.uint8)
 
 red1 = cv2.inRange(hsv, (0, 120, 100), (10, 255, 255))
 red2 = cv2.inRange(hsv, (170, 120, 100), (179, 255, 255))
-red_mask = cv2.bitwise_or(red1, red2)
-yellow_mask = cv2.inRange(hsv, (20, 100, 100), (35, 255, 255))
+masks = {
+    "red": cv2.bitwise_or(red1, red2),
+    "yellow": cv2.inRange(hsv, (20, 100, 100), (35, 255, 255)),
+}
 
-red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
-red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
-yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, kernel)
-yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_CLOSE, kernel)
-
-red_cnts, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-yellow_cnts, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-red_cnts = [c for c in red_cnts if cv2.contourArea(c) > min_area]
-yellow_cnts = [c for c in yellow_cnts if cv2.contourArea(c) > min_area]
-print("red:", len(red_cnts), "yellow:", len(yellow_cnts))
+contours = {}
+for colour, mask in masks.items():
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours[colour] = [c for c in cnts if cv2.contourArea(c) > min_area]
 
 
 # Part 6
@@ -121,45 +110,27 @@ def get_center(cnt):
 
 # Part 7
 def get_name(x, y):
-    col = int(x / cell + 0.5)
-    row = int(y / cell + 0.5)
-    col = max(1, min(col, 11))
-    row = max(1, min(row, 11))
+    col = max(1, min(int(x / cell + 0.5), 11))
+    row = max(1, min(int(y / cell + 0.5), 11))
     return letters[col - 1] + str(row)
 
 
-found = []
-for cnt in red_cnts:
-    x, y = get_center(cnt)
-    found.append(("red", x, y, get_name(x, y)))
-for cnt in yellow_cnts:
-    x, y = get_center(cnt)
-    found.append(("yellow", x, y, get_name(x, y)))
-
-for colour, x, y, name in found:
-    print(colour, round(x, 1), round(y, 1), name)
+def names_for(colour):
+    names = [get_name(*get_center(c)) for c in contours[colour]]
+    return sorted(names, key=lambda n: (n[0], int(n[1:])))
 
 
-# draw results
-out = warped.copy()
-cv2.drawContours(out, red_cnts + yellow_cnts, -1, (0, 255, 0), 2)
+critical = names_for(CRITICAL_COLOUR)
+stable = names_for(STABLE_COLOUR)
 
-for p in lines:
-    cv2.line(out, (p, 0), (p, size - 1), (255, 0, 255), 1)
-    cv2.line(out, (0, p), (size - 1, p), (255, 0, 255), 1)
 
-for colour, x, y, name in found:
-    pt = (int(x), int(y))
-    cv2.circle(out, pt, 5, (0, 0, 0), -1)
-    cv2.putText(out, name, (pt[0] + 8, pt[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
-    cv2.putText(out, name, (pt[0] + 8, pt[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+# results file
+stem = os.path.splitext(os.path.basename(args.image))[0]
+out_file = stem + "_results.txt"
 
-cv2.imwrite(os.path.join(folder, "detections.png"), det_img)
-cv2.imwrite(os.path.join(folder, "warped.png"), warped)
-cv2.imwrite(os.path.join(folder, "red_mask.png"), red_mask)
-cv2.imwrite(os.path.join(folder, "yellow_mask.png"), yellow_mask)
-cv2.imwrite(os.path.join(folder, "survivors.png"), out)
+with open(out_file, "w") as f:
+    f.write("Detected marker IDs: " + str(detected_ids) + "\n")
+    f.write("Critical Survivors: " + ", ".join(critical) + "\n")
+    f.write("Stable Survivors: " + ", ".join(stable) + "\n")
 
-cv2.imshow("survivors", out)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+print("wrote", out_file)
